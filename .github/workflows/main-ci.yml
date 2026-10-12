@@ -86,6 +86,20 @@ jobs:
   # Will build the docker image, and push it
   # to the container registry.
   build-api:
+    # UPSTREAM ONLY — these push to AnubisLMS's DigitalOcean registry and
+    # need `secrets.DIGITALOCEAN_ACCESS_TOKEN`, which this fork does not
+    # have. Without the guard they fail with `Input required and not
+    # supplied: token` on every push to main, and a permanently red main
+    # teaches people to stop reading red — which is worse than a skip,
+    # because a skipped job is honest about what it is.
+    #
+    # GUARDED RATHER THAN DELETED, so a merge from upstream stays clean: an
+    # added `if:` rarely conflicts, a removed job always does. One line to
+    # reverse the day this fork has a registry of its own.
+    #
+    # kuploy's own API image is built by kuploy-templates' `anubis-image`
+    # workflow, from this repo, into ghcr.io — see kuploy-templates#9.
+    if: github.repository == 'AnubisLMS/Anubis'
     name: Build api
     needs: [test-api]
     runs-on: ubuntu-latest
@@ -107,6 +121,20 @@ jobs:
       - name: Push image to registry
         run: env GIT_TAG=latest docker compose push api
   build-theia-shell-autograde:
+    # UPSTREAM ONLY — these push to AnubisLMS's DigitalOcean registry and
+    # need `secrets.DIGITALOCEAN_ACCESS_TOKEN`, which this fork does not
+    # have. Without the guard they fail with `Input required and not
+    # supplied: token` on every push to main, and a permanently red main
+    # teaches people to stop reading red — which is worse than a skip,
+    # because a skipped job is honest about what it is.
+    #
+    # GUARDED RATHER THAN DELETED, so a merge from upstream stays clean: an
+    # added `if:` rarely conflicts, a removed job always does. One line to
+    # reverse the day this fork has a registry of its own.
+    #
+    # kuploy's own API image is built by kuploy-templates' `anubis-image`
+    # workflow, from this repo, into ghcr.io — see kuploy-templates#9.
+    if: github.repository == 'AnubisLMS/Anubis'
     name: Build shell autograde
     needs: [test-theia-shell-autograde]
     runs-on: ubuntu-latest
@@ -128,6 +156,20 @@ jobs:
           env GIT_TAG=$(git log -1 --pretty=%h) docker compose push theia-autograde theia-autograde-docs
           env GIT_TAG=latest docker compose push theia-autograde theia-autograde-docs
   build-web:
+    # UPSTREAM ONLY — these push to AnubisLMS's DigitalOcean registry and
+    # need `secrets.DIGITALOCEAN_ACCESS_TOKEN`, which this fork does not
+    # have. Without the guard they fail with `Input required and not
+    # supplied: token` on every push to main, and a permanently red main
+    # teaches people to stop reading red — which is worse than a skip,
+    # because a skipped job is honest about what it is.
+    #
+    # GUARDED RATHER THAN DELETED, so a merge from upstream stays clean: an
+    # added `if:` rarely conflicts, a removed job always does. One line to
+    # reverse the day this fork has a registry of its own.
+    #
+    # kuploy's own API image is built by kuploy-templates' `anubis-image`
+    # workflow, from this repo, into ghcr.io — see kuploy-templates#9.
+    if: github.repository == 'AnubisLMS/Anubis'
     name: Build web
     runs-on: ubuntu-latest
     environment: anubis
@@ -148,6 +190,20 @@ jobs:
           env GIT_TAG=$(git log -1 --pretty=%h) docker compose push web
           env GIT_TAG=latest docker compose push web
   build-theia-images:
+    # UPSTREAM ONLY — these push to AnubisLMS's DigitalOcean registry and
+    # need `secrets.DIGITALOCEAN_ACCESS_TOKEN`, which this fork does not
+    # have. Without the guard they fail with `Input required and not
+    # supplied: token` on every push to main, and a permanently red main
+    # teaches people to stop reading red — which is worse than a skip,
+    # because a skipped job is honest about what it is.
+    #
+    # GUARDED RATHER THAN DELETED, so a merge from upstream stays clean: an
+    # added `if:` rarely conflicts, a removed job always does. One line to
+    # reverse the day this fork has a registry of its own.
+    #
+    # kuploy's own API image is built by kuploy-templates' `anubis-image`
+    # workflow, from this repo, into ghcr.io — see kuploy-templates#9.
+    if: github.repository == 'AnubisLMS/Anubis'
     name: Build images
     runs-on: ubuntu-latest
     environment: anubis
@@ -179,6 +235,20 @@ jobs:
   # Will push out yaml to the k8s cluster, then restart
   # deployments.
   deploy:
+    # UPSTREAM ONLY — these push to AnubisLMS's DigitalOcean registry and
+    # need `secrets.DIGITALOCEAN_ACCESS_TOKEN`, which this fork does not
+    # have. Without the guard they fail with `Input required and not
+    # supplied: token` on every push to main, and a permanently red main
+    # teaches people to stop reading red — which is worse than a skip,
+    # because a skipped job is honest about what it is.
+    #
+    # GUARDED RATHER THAN DELETED, so a merge from upstream stays clean: an
+    # added `if:` rarely conflicts, a removed job always does. One line to
+    # reverse the day this fork has a registry of its own.
+    #
+    # kuploy's own API image is built by kuploy-templates' `anubis-image`
+    # workflow, from this repo, into ghcr.io — see kuploy-templates#9.
+    if: github.repository == 'AnubisLMS/Anubis'
     name: Deploy to Anubis k8s cluster
     needs: [build-api, build-web, build-theia-shell-autograde, build-theia-images]
     runs-on: ubuntu-latest
