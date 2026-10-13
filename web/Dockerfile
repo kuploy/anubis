@@ -21,10 +21,12 @@ FROM node:18-alpine
 WORKDIR /opt/app
 RUN set -eux;  \
     apk add --no-cache tini;  \
-    yarn global add serve;  \
     find / -depth -name '.cache' -exec 'rm' '-rf' '{}' ';'
 
 COPY --from=0 /opt/app/build /opt/app/build
+# Node builtins only — see the header of serve.mjs for why this replaces
+# `serve -s build`, and why a runtime dependency tree is the wrong trade.
+COPY serve.mjs /opt/app/serve.mjs
 
 ARG GIT_TAG=latest
 ENV GIT_TAG=${GIT_TAG}
@@ -35,4 +37,4 @@ RUN set -eux; \
 USER nobody
 
 ENTRYPOINT ["tini", "--"]
-CMD ["serve", "-s", "build", "-l", "3000"]
+CMD ["node", "/opt/app/serve.mjs"]
