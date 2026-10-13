@@ -33,6 +33,20 @@ const ROOT = join(process.cwd(), "build");
 const PORT = Number(process.env.PORT || 3000);
 /** Same namespace, so Kubernetes DNS resolves the service name directly. */
 const TARGET = new URL(process.env.API_PROXY_TARGET || "http://anubis-api:5000");
+/**
+ * REFUSE AT STARTUP, not per request. `node:http` cannot speak TLS, so an
+ * `https://` target would have been proxied to port 80 in cleartext — a
+ * silent downgrade that looks like it works until something inspects the
+ * wire. Dying here is the honest failure: the pod will not start and the
+ * reason is the first line of its log.
+ */
+if (TARGET.protocol !== "http:") {
+  console.error(`[web] API_PROXY_TARGET must be http://; got ${TARGET.protocol}//. This proxy cannot do TLS.`);
+  process.exit(1);
+}
+const TARGET_PORT = Number(TARGET.port || 80);
+/** A backend that accepts and never answers must not hold a socket forever. */
+const UPSTREAM_TIMEOUT_MS = Number(process.env.API_PROXY_TIMEOUT_MS || 30_000);
 /** Prefixes the backend owns. Everything else is the SPA's. */
 const API_PREFIXES = (process.env.API_PROXY_PREFIXES || "/api,/ws,/public")
   .split(",").map((s) => s.trim()).filter(Boolean);
@@ -49,7 +63,7 @@ const isApi = (p) => API_PREFIXES.some((x) => p === x || p.startsWith(`${x}/`));
 
 function proxy(req, res) {
   const upstream = httpRequest(
-    { hostname: TARGET.hostname, port: TARGET.port || 80, path: req.url,
+    { hostname: TARGET.hostname, port: TARGET_PORT, path: req.url,
       method: req.method, headers: { ...req.headers, host: TARGET.host } },
     (up) => { res.writeHead(up.statusCode || 502, up.headers); up.pipe(res); },
   );
@@ -59,6 +73,9 @@ function proxy(req, res) {
     console.error(`[web] proxy to ${TARGET.origin}${req.url} failed: ${err.message}`);
     if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "api_unreachable", target: TARGET.origin }));
+  });
+  upstream.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
+    upstream.destroy(new Error(`no response in ${UPSTREAM_TIMEOUT_MS}ms`));
   });
   req.pipe(upstream);
 }
@@ -73,7 +90,25 @@ async function sendFile(res, file, code = 200) {
 }
 
 createServer(async (req, res) => {
-  const path = decodeURIComponent((req.url || "/").split("?")[0]);
+  /**
+   * DECODE INSIDE THE TRY. `decodeURIComponent("%")` throws URIError, and in
+   * an async handler that becomes an unhandled rejection — which Node turns
+   * into an uncaught exception and the process EXITS. `GET /%` stopped the
+   * container; tini is PID 1 so Kubernetes restarts it, and a client
+   * repeating it holds the pod in CrashLoopBackOff. On a template whose whole
+   * purpose is being publicly addressable, a scanner finds that by accident.
+   *
+   * 400 with JSON, for the same reason the proxy answers 502 with JSON: a
+   * malformed request is not a page. Found in review of #4.
+   */
+  let path;
+  try {
+    path = decodeURIComponent((req.url || "/").split("?")[0]);
+  } catch {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "malformed_uri" }));
+    return;
+  }
   if (isApi(path)) return proxy(req, res);
 
   // normalize() then confine to ROOT: `/../etc/passwd` must not escape.
