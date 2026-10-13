@@ -20,7 +20,7 @@ FROM node:18-alpine
 
 WORKDIR /opt/app
 RUN set -eux;  \
-    apk add --no-cach tini;  \
+    apk add --no-cache tini;  \
     yarn global add serve;  \
     find / -depth -name '.cache' -exec 'rm' '-rf' '{}' ';'
 
