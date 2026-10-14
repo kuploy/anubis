@@ -56,18 +56,50 @@ DIFFERENT — the chain is the side that has drifted from the models:
      with netid as a separate index. The ORM expects the models' version.
   2. `theia_session.network_locked` exists only in the chain. The model
      dropped the column; no migration ever did.
-  3. Column widths, where a migration widened or narrowed and the model
-     did not follow (or the reverse):
-       assigned_student_response.assigned_question_id  36  vs 128
-       theia_image.icon                              1024  vs 128
-       course.github_org                              text vs varchar(256)
-       static_file.filename / path / content_type  varchar vs mediumtext
-  4. text vs mediumtext on many columns — the models say mediumtext.
-  5. Collation on the JSON-ish longtext columns: chain
-     utf8mb4_general_ci, models utf8mb4_bin (theia_options,
-     theia_default_options, submission.errors, theia_session.resources).
-     This one changes comparison and sort behaviour, not just storage.
-  6. `assignment_test.order` — NOT NULL in the chain, nullable in the
+  3. Column types — EXACTLY 17 columns, chain vs models:
+
+       assigned_student_response.assigned_question_id  varchar(36)   varchar(128)
+       theia_image.icon                                varchar(1024) varchar(128)
+       course.github_org                               text          varchar(256)
+       static_file.filename                            varchar(256)  mediumtext
+       static_file.path                                varchar(256)  mediumtext
+       static_file.content_type                        varchar(128)  mediumtext
+       assigned_student_response.response              text          mediumtext
+       assignment.github_template                      text          mediumtext
+       assignment_question.question                    text          mediumtext
+       assignment_question.placeholder                 text          mediumtext
+       assignment_question.solution                    text          mediumtext
+       course.autograde_tests_repo                     text          mediumtext
+       course.professor_display_name                   text          mediumtext
+       lecture_notes.title                             text          mediumtext
+       lecture_notes.description                       text          mediumtext
+       submission_build.stdout                         text          mediumtext
+       theia_image.description                         text          mediumtext
+
+     Two of these NARROW (icon 1024->128, assigned_question_id is the
+     only widening) — so this is not uniformly "the models are roomier".
+
+  4. Collation — FOUR columns, and they are worth naming individually
+     because collation decides how WHERE, ORDER BY and UNIQUE compare,
+     so a query can behave differently on a fresh deploy than on
+     upstream's production:
+
+       assignment.theia_options        chain general_ci   models bin
+       course.theia_default_options    chain general_ci   models bin
+       submission.errors               chain general_ci   models bin
+       theia_session.resources         chain general_ci   models bin
+
+     NOT divergent, though both are utf8mb4_bin and look like they
+     belong above — do not "fix" these:
+
+       forum_post.content              bin on BOTH sides
+       forum_post_comment.content      bin on BOTH sides
+
+     (Six columns are utf8mb4_bin under create_all; only the first four
+     differ from the chain. Counting the _bin columns rather than the
+     disagreeing ones overstates this by two.)
+
+  5. `assignment_test.order` — NOT NULL in the chain, nullable in the
      models.
 
 Why ship anyway: a fresh deploy is self-consistent, because create_all and
