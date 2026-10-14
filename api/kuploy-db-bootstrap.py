@@ -56,10 +56,15 @@ DIFFERENT — the chain is the side that has drifted from the models:
      with netid as a separate index. The ORM expects the models' version.
   2. `theia_session.network_locked` exists only in the chain. The model
      dropped the column; no migration ever did.
-  3. Column types — EXACTLY 17 columns, chain vs models:
+  3. Column types — EXACTLY 16 columns, chain vs models. (It was 17.
+     theia_image.icon was varchar(1024) in the chain and varchar(128)
+     here, and that one was NOT drift: the models declared `icon` twice
+     and the second declaration shadowed the first. Fixed in this fork;
+     see the comment at that line. It was the only divergence on this
+     branch that could reject a value rather than confuse a reviewer,
+     and it is gone.)
 
        assigned_student_response.assigned_question_id  varchar(36)   varchar(128)
-       theia_image.icon                                varchar(1024) varchar(128)
        course.github_org                               text          varchar(256)
        static_file.filename                            varchar(256)  mediumtext
        static_file.path                                varchar(256)  mediumtext
@@ -76,8 +81,9 @@ DIFFERENT — the chain is the side that has drifted from the models:
        submission_build.stdout                         text          mediumtext
        theia_image.description                         text          mediumtext
 
-     Two of these NARROW (icon 1024->128, assigned_question_id is the
-     only widening) — so this is not uniformly "the models are roomier".
+     None of the remaining 16 narrows: assigned_question_id widens and
+     the rest go text -> mediumtext or text -> varchar(256). The only
+     narrowing was icon, and it was a bug rather than a divergence.
 
   4. Collation — FOUR columns, and they are worth naming individually
      because collation decides how WHERE, ORDER BY and UNIQUE compare,

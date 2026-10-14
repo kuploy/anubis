@@ -689,7 +689,20 @@ class TheiaImage(db.Model):
     icon: str = Column(String(length=1024), default="")
     public: bool = Column(Boolean, nullable=False, default=False)
     default_tag: str = Column(String(length=128), default="latest")
-    icon: str = Column(String(length=128))
+    # kuploy fork: this line was a duplicate declaration of `icon`, 3 lines
+    # below the real one. In a class body the second assignment wins, so the
+    # effective column was String(128) and the String(1024) above was dead.
+    # Upstream's own migration 4f7efe8d8177 asserts
+    #   ALTER TABLE `theia_image` MODIFY `icon` varchar(1024) ...
+    # so their migrated production column is 1024 and only a schema built
+    # from these models came out 128 — the one divergence on this branch that
+    # could REJECT a value rather than confuse a reviewer. Removed; verified
+    # create_all then builds varchar(1024), matching the chain.
+    #
+    # It also restores the Python-side default="" the shadowing line dropped.
+    # Python-side, not DDL: information_schema still reports column_default
+    # NULL afterwards, because SQLAlchemy applies that default on insert
+    # rather than emitting it in the DDL.
     webtop: bool = Column(Boolean, default=False)
 
     courses = relationship(Course, backref="theia_default_image")
