@@ -35,10 +35,53 @@ if [ -z "${DATABASE_URI}" ] && [ -n "${DB_USER}" ] && [ -n "${DB_NAME}" ]; then
     echo "composed DATABASE_URI from DB_* parts for ${DB_USER}@${DB_HOST}/${DB_NAME}"
 fi
 
+# ---------------------------------------------------------------------------
+# Wait for the database to be USABLE, not merely listening.
+#
+# `mysqladmin ping` exits 0 on access denied. Not "tolerates" — always: this
+# loop passes no credentials, so it gets
+#
+#   Access denied for user 'root'@'...' (using password: NO)   exit 0
+#
+# every single time. Its only signal is that something completed a TCP
+# handshake. Measured on MariaDB 11: wrong credentials, no credentials and
+# correct credentials all exit 0; only the third prints "mysqld is alive".
+#
+# That was survivable when the next step was gunicorn, which retries its
+# connections. It is not survivable now that `alembic upgrade head` runs here
+# under `set -e`, because MariaDB accepts connections BEFORE mariadb-install-db
+# has created the user and database. On Longhorn that window was measured at
+# over 18 minutes, pod 1/1 Ready throughout. The container would ping, migrate,
+# die on 1045/1049, and crash-loop until init finished — self-healing, but the
+# log would carry an alembic error while the real state was "the database is
+# not ready and the loop could not tell".
+#
+# So when the credentials are known, wait on a query that needs all three
+# facts alembic needs: server up, credentials valid, database present. The
+# bare ping stays as the fallback for compose and the chart, which pass
+# DATABASE_URI rather than parts, so their behaviour is unchanged.
+# ---------------------------------------------------------------------------
 echo 'Waiting for db...'
-until mysqladmin ping -h "${DB_HOST}" -P "${DB_PORT:-3306}"; do
-    sleep 1
-done
+if [ -n "${DB_USER}" ] && [ -n "${DB_NAME}" ]; then
+    # --skip-ssl: this image ships the MariaDB 11.8 client, which REQUIRES TLS
+    # by default and fails with "SSL is required, but the server does not
+    # support it" against a server that does not offer it (measured against
+    # mariadb:10.6). mariadb:11 — kuploy's default — does offer TLS, so this
+    # flag changes nothing there; without it the loop would spin forever on an
+    # older server, which is worse than the bug it exists to fix. The app's own
+    # connection (pymysql) is not TLS either, so this probe is no weaker than
+    # the traffic that follows it.
+    until mysql --skip-ssl -h "${DB_HOST}" -P "${DB_PORT:-3306}" \
+                -u "${DB_USER}" "-p${DB_PASSWORD}" \
+                -e 'select 1' "${DB_NAME}" >/dev/null 2>&1; do
+        echo "  waiting for ${DB_USER}@${DB_HOST}/${DB_NAME} to accept a query"
+        sleep 2
+    done
+else
+    until mysqladmin ping -h "${DB_HOST}" -P "${DB_PORT:-3306}"; do
+        sleep 1
+    done
+fi
 echo 'db ready'
 
 echo 'Waiting a second'
@@ -54,42 +97,47 @@ if [ "${DEBUG}" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Migrations. Nothing in this container used to run them.
+# Schema. Nothing in this container used to touch it.
 #
-# There are 76 revisions in migrations/versions and the only `alembic upgrade
-# head` in the repo is in Makefiles a human runs from OUTSIDE the container
-# (Makefile via `docker compose exec`, api/Makefile against a venv). Upstream
-# expects an operator to migrate by hand, which works for upstream and does not
-# work for a one-click platform deploy: the API came up, answered 1/1 Ready,
-# and had no schema.
+# docker-entrypoint.sh waited for the database and exec'd gunicorn. There are
+# 76 revisions in migrations/versions and the only `alembic upgrade head` in
+# this repo is in Makefiles a human runs from OUTSIDE the container. Upstream
+# migrates by hand; a platform deploy has no hand. The API came up, reported
+# 1/1 Ready, and had no schema.
 #
-# The chart's MIGRATE flag is not this. It is read only by dev.py, only under
-# MINDEBUG=1, and calls db.create_all() rather than alembic — which would build
-# tables from the current models and leave alembic_version unset, so the 76
-# revisions could never be applied afterwards. MINDEBUG=1 is also exactly what
-# switches env.py onto sqlite, so the only path that reached create_all() was
-# the path that could not see the real database.
+# The chart's MIGRATE flag is not this mechanism: it is read only by dev.py,
+# only under MINDEBUG=1, and calls db.create_all() rather than alembic — and
+# MINDEBUG=1 is exactly what switches env.py onto sqlite, so the only path
+# that reached create_all() could not see the real database.
 #
-# Placed after the DEBUG branch (which loops forever and never falls through)
-# so `make debug` and dev.py behave exactly as before.
+# kuploy-db-bootstrap.py decides between two paths and says which it took.
+# The header of that file has the measurements; the short version is that
+# the historical chain CANNOT be replayed from an empty database on either
+# MariaDB 10.6 or 11.8, so a fresh database gets the schema from the models
+# and an alembic stamp, and an existing one gets the normal upgrade.
 #
-# migrations/env.py builds the URL from the Flask app config, so it reads the
-# DATABASE_URI composed above — one variable, both consumers, no second place
-# for the credentials to disagree.
+#   exit 10 -> schema already present   -> alembic upgrade head
+#   exit 11 -> was empty, create_all'd  -> alembic stamp head
 #
-# `set -e` means a failed migration stops the container instead of serving an
-# app with no schema. That is deliberate: a crash loop with alembic's error in
-# the log is diagnosable, an API answering 500 to everything is not.
+# Any other exit is a real failure and `set -e` stops the container, which is
+# deliberate: a crash loop carrying the actual error is diagnosable, an API
+# answering 500 to everything is not.
 #
 # SKIP_MIGRATIONS=1 is the escape hatch for a second replica or a deploy that
-# migrates out of band. Alembic does not coordinate concurrent runs, so if this
-# component is ever scaled past one replica the extras need it set.
+# handles the schema out of band. Alembic does not coordinate concurrent runs.
 # ---------------------------------------------------------------------------
 if [ "${SKIP_MIGRATIONS}" = "1" ]; then
-    echo 'skipping migrations (SKIP_MIGRATIONS=1)'
+    echo 'skipping schema step (SKIP_MIGRATIONS=1)'
 else
-    echo 'running migrations'
-    alembic upgrade head
+    set +e
+    python3 kuploy-db-bootstrap.py
+    bootstrap_rc=$?
+    set -e
+    case "${bootstrap_rc}" in
+        10) echo 'schema present: alembic upgrade head'; alembic upgrade head ;;
+        11) echo 'fresh database: alembic stamp head';   alembic stamp head ;;
+        *)  echo "bootstrap failed (rc=${bootstrap_rc})"; exit "${bootstrap_rc}" ;;
+    esac
 fi
 
 echo 'Starting api'
