@@ -51,6 +51,37 @@ const UPSTREAM_TIMEOUT_MS = Number(process.env.API_PROXY_TIMEOUT_MS || 30_000);
 const API_PREFIXES = (process.env.API_PROXY_PREFIXES || "/api,/ws,/public")
   .split(",").map((s) => s.trim()).filter(Boolean);
 
+/*
+ * STRIP `/api` BEFORE FORWARDING, because the API does not serve it.
+ *
+ * The SPA calls `/api/public/auth/whoami`. The Flask app registers
+ * `/public/auth/whoami` — there is no `/api` prefix anywhere in its url_map
+ * (171 routes, checked against the running container). Upstream's deployment
+ * reconciles the two at the edge, not in the app: k8s/chart/templates/
+ * ingress.yml:1-11 declares a Traefik StripPrefix middleware named
+ * `strip-api`, and the route matching PathPrefix(`/api/`) applies it before
+ * handing off to the api service (:69-73).
+ *
+ * This proxy replaces that edge, so it has to do the same strip. Forwarding
+ * verbatim gives a 404 from the API for every call the SPA makes — which is
+ * a working proxy, a reachable backend, and a UI that still does nothing.
+ *
+ * Only `/api` is stripped, matching upstream's middleware exactly. `/ws` and
+ * `/public` are paths the API really serves, so they pass through untouched.
+ */
+const STRIP_PREFIXES = (process.env.API_PROXY_STRIP_PREFIXES || "/api")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+
+/** `/api/public/x` -> `/public/x`; a bare `/api` -> `/`. */
+export const upstreamPath = (url) => {
+  for (const p of STRIP_PREFIXES) {
+    if (url === p) return "/";
+    if (url.startsWith(`${p}/`)) return url.slice(p.length);
+    if (url.startsWith(`${p}?`)) return `/${url.slice(p.length)}`;
+  }
+  return url;
+};
+
 const TYPES = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8",
@@ -62,15 +93,16 @@ const TYPES = {
 const isApi = (p) => API_PREFIXES.some((x) => p === x || p.startsWith(`${x}/`));
 
 function proxy(req, res) {
+  const path = upstreamPath(req.url);
   const upstream = httpRequest(
-    { hostname: TARGET.hostname, port: TARGET_PORT, path: req.url,
+    { hostname: TARGET.hostname, port: TARGET_PORT, path,
       method: req.method, headers: { ...req.headers, host: TARGET.host } },
     (up) => { res.writeHead(up.statusCode || 502, up.headers); up.pipe(res); },
   );
   upstream.on("error", (err) => {
     // JSON, not index.html. A caller must be able to tell "the API is down"
     // from "here is a web page", which is the bug this file fixes.
-    console.error(`[web] proxy to ${TARGET.origin}${req.url} failed: ${err.message}`);
+    console.error(`[web] proxy to ${TARGET.origin}${path} failed: ${err.message}`);
     if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "api_unreachable", target: TARGET.origin }));
   });
